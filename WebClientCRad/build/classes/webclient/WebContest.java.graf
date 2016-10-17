@@ -1,0 +1,108 @@
+package webclient;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URL;
+import java.util.Arrays;
+import java.util.Date;
+import org.jfree.chart.ChartFactory;
+import org.jfree.chart.ChartUtilities;
+import org.jfree.chart.JFreeChart;
+import org.jfree.chart.plot.PlotOrientation;
+import org.jfree.data.xy.XYSeries;
+import org.jfree.data.xy.XYSeriesCollection;
+
+public class WebContest {
+
+    public static void main(String[] args) {
+        WebContest app = new WebContest();
+        app.retrieveSolar ();
+    }
+
+    void retrieveSolar () {
+        int samples = 10;   // nastavení max. počtu čtených vzorků
+        String[] datalines = new String[samples];
+        try {
+            URL iurl = new URL("https://api.pripoj.me/message/get/0004A30B00195511?token=Y7J3MvLLMrXCtzpiQuPgHHu7wO046Jx6&limit="+String.valueOf(samples));
+            // načti stream a převeď ho na byte[]
+            InputStream is = iurl.openStream();
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buffer = new byte[1024];
+            while (true) {
+                int r = is.read(buffer);
+                if (r == -1) break;
+                out.write(buffer, 0, r);
+            }
+            byte[] jsonData = out.toByteArray();
+            double osvit, batt;
+            // analyzuj data ve formátu Jackson
+            ObjectMapper objectMapper = new ObjectMapper();
+            JsonNode rootNode = objectMapper.readTree(jsonData);
+            JsonNode metaNode  = rootNode.path("_meta");
+            JsonNode statNode  = metaNode.path("status");
+            if (statNode.asText().equals ("SUCCESS")) {
+                JsonNode recoNode = rootNode.path("records");
+		if (recoNode.isArray()) {
+                    int i=0;
+                    for (JsonNode node : recoNode) {
+                        String times   = node.path("createdAt").asText();
+                        // analyzuj payload
+                        String payload = node.path("payloadHex").asText();
+                        if (payload.length()==8){
+                            if (payload.substring(0,2).equals("55")) {
+                                osvit = (double) Integer.parseInt(payload.substring(2,5));
+                                batt  = (double) Integer.parseInt(payload.substring(5,8));
+                                osvit = Math.pow (1.009960258, osvit);
+                                batt  = (batt-100)*2*5.07/899;
+                                times = times+","+String.valueOf(osvit)+","+String.valueOf(batt);
+                                datalines[i] = times;
+                                i++;
+                            }
+                        }
+                    }
+                    Arrays.sort(datalines);
+                    // připrav data pro časový graf
+                    XYSeries s1 = new XYSeries("Osvit");
+                    XYSeries s2 = new XYSeries("Baterie");
+                    for (String dataline:datalines){
+                        String[] dd = dataline.split(",");
+                        Integer YY = Integer.parseInt (dd[0].substring(0,4))-1900;
+                        Integer MM = Integer.parseInt (dd[0].substring(5,7))-1;
+                        Integer DD = Integer.parseInt (dd[0].substring(8,10));
+                        Integer hh = Integer.parseInt (dd[0].substring(11,13));
+                        Integer mm = Integer.parseInt (dd[0].substring(14,16));
+                        Date ddate = new Date (YY,MM,DD,hh,mm);
+                        long ldate = ddate.getTime()/1000000;
+                        s1.add (ldate, Double.parseDouble(dd[1]));
+                        s2.add (ldate, 1000*Double.parseDouble(dd[2]));
+                    }
+                    XYSeriesCollection dataset = new XYSeriesCollection();
+                    dataset.addSeries(s1);
+                    dataset.addSeries(s2);
+                    // vytvoř a ulož graf
+                    JFreeChart chart = ChartFactory.createXYLineChart(
+                        "\"Světloměr\"", // Title
+                        "Čas [ms*1000]", // x-axis Label
+                        "Osvit [lx], Baterie*1000 [V]", // y-axis Label
+                        dataset, // Dataset
+                        PlotOrientation.VERTICAL, // Plot Orientation
+                        false, // Show Legend
+                        false, // Use tooltips
+                        false // Configure chart to generate URLs?
+                    );
+                    try {
+                        ChartUtilities.saveChartAsJPEG(new File("C:\\Temp\\osvit.jpg"), chart, 500, 300);
+                    } catch (IOException exx) {
+                        System.out.println("Problem occurred creating chart.");
+                    }
+                }
+            }
+        } catch (IOException | NumberFormatException e) {
+            System.out.println (e.getMessage());
+        }
+    }
+}
